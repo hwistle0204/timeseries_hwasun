@@ -70,9 +70,26 @@ Hwasun_season['총출하량'] = Hwasun_season['총출하량'].interpolate(method
 Hwasun_df = Hwasun_season.dropna()
 print("\n최종 분석 일수:", len(Hwasun_df))            # 830
 
-# ARMA 입력용 시계열 (시즌 제외로 인덱스가 불연속이므로 정수 인덱스로 재설정)
-ts = Hwasun_df['총출하량'].reset_index(drop=True)
+# ARMA 입력용 시계열
 
+date_index = Hwasun_df.index.copy()
+ts = pd.Series(
+    Hwasun_df['총출하량'].to_numpy(),
+    index=pd.RangeIndex(start=0, stop=len(Hwasun_df), step=1),
+    name='총출하량'
+)
+
+season_pos = np.arange(len(date_index))
+
+def set_date_xticks(ax, pos, dates, n_ticks=12):
+    """압축된 위치축에 실제 날짜 라벨을 붙이는 함수."""
+    tick_idx = np.linspace(0, len(pos) - 1, min(n_ticks, len(pos)), dtype=int)
+    ax.set_xticks(pos[tick_idx])
+    ax.set_xticklabels(
+        [pd.Timestamp(dates[i]).strftime('%Y-%m-%d') for i in tick_idx],
+        rotation=45,
+        ha='right'
+    )
 
 # ─────────────────────────────────────────────────────────────────────
 # 5. 원시계열 시각화
@@ -88,8 +105,11 @@ plt.show()
 # ─────────────────────────────────────────────────────────────────────
 log_ts = np.log(ts)
 
-sns.lineplot(x=log_ts.index, y=log_ts.values)
+# 날짜축으로 표시하되, 모델 입력은 RangeIndex 유지
+sns.lineplot(x=date_index, y=log_ts.values)
 plt.title("로그 변환 시계열")
+plt.xlabel("출하일자")
+plt.ylabel("log(총출하량)")
 plt.show()
 
 
@@ -237,6 +257,26 @@ fc = final_model.get_forecast(steps=7)
 pred_mean = fc.predicted_mean
 pred_ci = fc.conf_int(alpha=0.05)
 
+# 예측 날짜 생성: 실제 날짜축을 유지하고, 비출하월(6~10월)은 건너뜀
+def make_forecast_dates(last_date, steps, excluded_months=(6, 7, 8, 9, 10)):
+    dates = []
+    cur = pd.Timestamp(last_date)
+    while len(dates) < steps:
+        cur += pd.Timedelta(days=1)
+        if cur.month not in excluded_months:
+            dates.append(cur)
+    return pd.DatetimeIndex(dates, name='datetime')
+
+pred_dates = make_forecast_dates(date_index[-1], steps=7)
+
+# forecast 결과에 실제 예측 날짜 인덱스 부여
+pred_mean = pd.Series(pred_mean.to_numpy(), index=pred_dates, name='prediction')
+pred_ci = pd.DataFrame(
+    pred_ci.to_numpy(),
+    index=pred_dates,
+    columns=['lower', 'upper']
+)
+
 print("\n7시차 예측(로그):\n", pred_mean.round(3))
 print("7시차 예측(원단위):\n", np.exp(pred_mean).round(1))
 
@@ -245,16 +285,25 @@ print("7시차 예측(원단위):\n", np.exp(pred_mean).round(1))
 # 13. 예측 시각화 (관측 + 적합 + 예측구간)
 # ─────────────────────────────────────────────────────────────────────
 fitted_values = final_model.fittedvalues
-n = len(log_ts)
-pred_x = range(n, n + 7)
 
-plt.figure(figsize=(10, 6))
-plt.plot(range(n), log_ts.values, label='data')
-plt.plot(range(n), fitted_values, label='fitted')
-plt.plot(pred_x, pred_mean.values, color='red', label='prediction')
-plt.plot(pred_x, pred_ci.iloc[:, 0], color='red', linestyle='--', linewidth=1)
-plt.plot(pred_x, pred_ci.iloc[:, 1], color='red', linestyle='--', linewidth=1)
-plt.fill_between(pred_x, pred_ci.iloc[:, 0], pred_ci.iloc[:, 1], color='red', alpha=0.2)
-plt.legend()
-plt.title("화순 딸기 총출하량 ARMA(1,1) 7시차 예측")
+# 예측도 압축된 시즌 위치에 붙인다.
+# 즉, 육묘기간은 그래프 축에서 제거하되 라벨은 실제 예측 날짜로 표시한다.
+pred_pos = np.arange(len(date_index), len(date_index) + len(pred_dates))
+all_pos = np.r_[season_pos, pred_pos]
+all_dates = date_index.append(pred_dates)
+
+fig, ax = plt.subplots(figsize=(21, 7))
+ax.plot(season_pos, log_ts.values, label='data')
+ax.plot(season_pos, fitted_values.values, label='fitted')
+ax.plot(pred_pos, pred_mean.values, color='red', label='prediction')
+ax.plot(pred_pos, pred_ci['lower'], color='red', linestyle='--', linewidth=1)
+ax.plot(pred_pos, pred_ci['upper'], color='red', linestyle='--', linewidth=1)
+ax.fill_between(pred_pos, pred_ci['lower'].to_numpy(), pred_ci['upper'].to_numpy(), color='red', alpha=0.2)
+
+set_date_xticks(ax, all_pos, all_dates, n_ticks=12)
+ax.legend()
+ax.set_title("화순 딸기 총출하량 ARMA(1,1) 7시차 예측 — 육묘기간 제외, 날짜 라벨 표시")
+ax.set_xlabel("출하일자")
+ax.set_ylabel("log(총출하량)")
+plt.tight_layout()
 plt.show()
